@@ -884,33 +884,29 @@ class SegModel(pl.LightningModule):
 def run_model(img_path, model, min_area=50):
     img = cv2.cvtColor(cv2.imread(img_path), cv2.COLOR_BGR2RGB)
     img_height, img_width = img.shape[:2]
-    img_pad = np.zeros((img.shape[0] + 224, img.shape[1] + 224, img.shape[2]), dtype=np.uint8)
-    label_pad = np.zeros((img.shape[0] + 224, img.shape[1] + 224), dtype=np.uint8)
-    img_pad[112:-112, 112:-112] = img
+
+    # 计算需要填充的大小，使得高度和宽度都是32的倍数
+    pad_h = (32 - img_height % 32) % 32
+    pad_w = (32 - img_width % 32) % 32
+
+    # 在图像的右边和下边进行填充
+    img_pad = np.pad(img, ((0, pad_h), (0, pad_w), (0, 0)), mode='constant', constant_values=0)
+
     preprocessing_fn = smp.encoders.get_preprocessing_fn('resnet50')
+    img1 = preprocessing_fn(img_pad)
+    img1 = transforms.ToTensor()(img1).float()
+    img1 = torch.unsqueeze(img1, 0)
 
-    for i in range(img_pad.shape[0] // 800 + 1):
-        for j in range(img_pad.shape[1] // 800 + 1):
-            x, x1, y, y1 = 800 * i, 800 * i + 1024, 800 * j, 800 * j + 1024
-            to_much_x = x1 - img_pad.shape[0]
-            to_much_y = y1 - img_pad.shape[1]
-            if to_much_x > 0:
-                x = img_pad.shape[0] - 1024
-                x1 = img_pad.shape[0]
-            if to_much_y > 0:
-                y = img_pad.shape[1] - 1024
-                y1 = img_pad.shape[1]
-            input_img = img_pad[x:x1, y:y1].copy()
-            img1 = preprocessing_fn(input_img)
-            img1 = transforms.ToTensor()(img1).float()
-            img1 = torch.unsqueeze(img1, 0)
-            r = model.forward(img1)
-            processed = torch.squeeze(r.detach()).long().numpy()
-            labels = skm.label(processed).transpose((1, 0))
-            result_semseg = (labels.T > 0).astype(np.uint8) * 255
-            label_pad[x + 112:x1 - 112, y + 112:y1 - 112] = result_semseg[112:-112, 112:-112]
+    # 模型推理
+    r = model.forward(img1)
+    processed = torch.squeeze(r.detach()).long().numpy()
+    labels = skm.label(processed).transpose((1, 0))
+    result_semseg = (labels.T > 0).astype(np.uint8) * 255
 
-    final_mask = label_pad[112:-112, 112:-112]
+    # 裁剪回原始图像大小
+    final_mask = result_semseg[:img_height, :img_width]
+
+    # 计算白细胞数量、过滤小区域等
     binary_mask = (final_mask > 0).astype(np.uint8)
     labeled_mask, num_cells = skm.label(binary_mask, return_num=True)
 
@@ -933,7 +929,6 @@ def run_model(img_path, model, min_area=50):
                 # 调整文字位置和大小
                 centroid_y, centroid_x = int(centroid[0]), int(centroid[1])
                 text = str(valid_count)
-                # 默认字体大小
                 font_scale = 0.5
                 thickness = 1
                 (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
@@ -951,33 +946,28 @@ def run_model(img_path, model, min_area=50):
                 )
 
                 # 特别检查右边边界：增加余量
-                is_near_right_edge = centroid_x > img_width - 20  # 更宽松的右边边界检测
+                is_near_right_edge = centroid_x > img_width - 20
 
                 if is_out_of_bounds or is_near_right_edge:
-                    # 优先调整位置
                     if text_x < 0:
                         text_x = 0
                     if text_x + text_width > img_width:
-                        text_x = img_width - text_width - 10  # 增加右边偏移余量
+                        text_x = img_width - text_width - 10
                     if text_y - text_height < 0:
                         text_y = text_height
                     if text_y > img_height:
                         text_y = img_height
 
-                    # 重新检查调整后的位置是否仍然超出边界
                     is_still_out_of_bounds = (
                         text_x + text_width > img_width or
                         text_y > img_height
                     )
 
                     if is_still_out_of_bounds or is_near_right_edge:
-                        # 如果调整位置后仍然超出，减小字体大小
                         font_scale = 0.3
                         (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-                        # 重新计算位置
                         text_x = centroid_x - text_width // 2
                         text_y = centroid_y + text_height // 2
-                        # 确保不超出边界
                         text_x = max(0, min(text_x, img_width - text_width - 10))
                         text_y = max(text_height, min(text_y, img_height))
 
@@ -987,7 +977,7 @@ def run_model(img_path, model, min_area=50):
                     (text_x, text_y),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     font_scale,
-                    0,  # 黑色文字
+                    0,
                     thickness
                 )
         num_cells = valid_count
