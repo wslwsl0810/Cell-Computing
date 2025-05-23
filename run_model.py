@@ -889,8 +889,8 @@ def run_model(img_path, model, min_area=50):
     pad_h = (32 - img_height % 32) % 32
     pad_w = (32 - img_width % 32) % 32
 
-    # 在图像的右边和下边进行填充
-    img_pad = np.pad(img, ((0, pad_h), (0, pad_w), (0, 0)), mode='constant', constant_values=0)
+    # 在图像的上下左右进行填充
+    img_pad = np.pad(img, ((pad_h // 2, pad_h - pad_h // 2), (pad_w // 2, pad_w - pad_w // 2), (0, 0)), mode='constant', constant_values=0)
 
     preprocessing_fn = smp.encoders.get_preprocessing_fn('resnet50')
     img1 = preprocessing_fn(img_pad)
@@ -904,7 +904,7 @@ def run_model(img_path, model, min_area=50):
     result_semseg = (labels.T > 0).astype(np.uint8) * 255
 
     # 裁剪回原始图像大小
-    final_mask = result_semseg[:img_height, :img_width]
+    final_mask = result_semseg[pad_h // 2:pad_h // 2 + img_height, pad_w // 2:pad_w // 2 + img_width]
 
     # 计算白细胞数量、过滤小区域等
     binary_mask = (final_mask > 0).astype(np.uint8)
@@ -926,64 +926,122 @@ def run_model(img_path, model, min_area=50):
                     'centroid': (int(centroid[0]), int(centroid[1])),
                     'label': prop.label
                 }
-                # 调整文字位置和大小
-                centroid_y, centroid_x = int(centroid[0]), int(centroid[1])
-                text = str(valid_count)
-                font_scale = 0.5
-                thickness = 1
-                (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-
-                # 初始文字位置
-                text_x = centroid_x - text_width // 2
-                text_y = centroid_y + text_height // 2
-
-                # 检查文字是否超出图像边界
-                is_out_of_bounds = (
-                    text_x < 0 or
-                    text_x + text_width > img_width or
-                    text_y - text_height < 0 or
-                    text_y > img_height
-                )
-
-                # 特别检查右边边界：增加余量
-                is_near_right_edge = centroid_x > img_width - 20
-
-                if is_out_of_bounds or is_near_right_edge:
-                    if text_x < 0:
-                        text_x = 0
-                    if text_x + text_width > img_width:
-                        text_x = img_width - text_width - 10
-                    if text_y - text_height < 0:
-                        text_y = text_height
-                    if text_y > img_height:
-                        text_y = img_height
-
-                    is_still_out_of_bounds = (
-                        text_x + text_width > img_width or
-                        text_y > img_height
-                    )
-
-                    if is_still_out_of_bounds or is_near_right_edge:
-                        font_scale = 0.3
-                        (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-                        text_x = centroid_x - text_width // 2
-                        text_y = centroid_y + text_height // 2
-                        text_x = max(0, min(text_x, img_width - text_width - 10))
-                        text_y = max(text_height, min(text_y, img_height))
-
                 cv2.putText(
                     labeled_image,
-                    text,
-                    (text_x, text_y),
+                    str(valid_count),
+                    (int(centroid[1]), int(centroid[0])),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    font_scale,
+                    0.5,
                     0,
-                    thickness
+                    1
                 )
         num_cells = valid_count
         final_mask = (filtered_mask * 255).astype(np.uint8)
 
     return final_mask, num_cells, labeled_image, cell_info, binary_mask, labeled_mask, img
+# def run_model(img_path, model, min_area=50):
+#     img = cv2.cvtColor(cv2.imread(img_path), cv2.COLOR_BGR2RGB)
+#     img_height, img_width = img.shape[:2]
+
+#     # 计算需要填充的大小，使得高度和宽度都是32的倍数
+#     pad_h = (32 - img_height % 32) % 32
+#     pad_w = (32 - img_width % 32) % 32
+
+#     # 在图像的右边和下边进行填充
+#     img_pad = np.pad(img, ((0, pad_h), (0, pad_w), (0, 0)), mode='constant', constant_values=0)
+
+#     preprocessing_fn = smp.encoders.get_preprocessing_fn('resnet50')
+#     img1 = preprocessing_fn(img_pad)
+#     img1 = transforms.ToTensor()(img1).float()
+#     img1 = torch.unsqueeze(img1, 0)
+
+#     # 模型推理
+#     r = model.forward(img1)
+#     processed = torch.squeeze(r.detach()).long().numpy()
+#     labels = skm.label(processed).transpose((1, 0))
+#     result_semseg = (labels.T > 0).astype(np.uint8) * 255
+
+#     # 裁剪回原始图像大小
+#     final_mask = result_semseg[:img_height, :img_width]
+
+#     # 计算白细胞数量、过滤小区域等
+#     binary_mask = (final_mask > 0).astype(np.uint8)
+#     labeled_mask, num_cells = skm.label(binary_mask, return_num=True)
+
+#     cell_info = {}
+#     if min_area > 0:
+#         props = skm.regionprops(labeled_mask)
+#         filtered_mask = np.zeros_like(labeled_mask, dtype=np.uint8)
+#         valid_count = 0
+#         labeled_image = final_mask.copy()
+#         for prop in props:
+#             if prop.area >= min_area:
+#                 filtered_mask[labeled_mask == prop.label] = 1
+#                 valid_count += 1
+#                 centroid = prop.centroid
+#                 cell_info[valid_count] = {
+#                     'area': prop.area,
+#                     'centroid': (int(centroid[0]), int(centroid[1])),
+#                     'label': prop.label
+#                 }
+#                 # 调整文字位置和大小
+#                 centroid_y, centroid_x = int(centroid[0]), int(centroid[1])
+#                 text = str(valid_count)
+#                 font_scale = 0.5
+#                 thickness = 1
+#                 (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+
+#                 # 初始文字位置
+#                 text_x = centroid_x - text_width // 2
+#                 text_y = centroid_y + text_height // 2
+
+#                 # 检查文字是否超出图像边界
+#                 is_out_of_bounds = (
+#                     text_x < 0 or
+#                     text_x + text_width > img_width or
+#                     text_y - text_height < 0 or
+#                     text_y > img_height
+#                 )
+
+#                 # 特别检查右边边界：增加余量
+#                 is_near_right_edge = centroid_x > img_width - 20
+
+#                 if is_out_of_bounds or is_near_right_edge:
+#                     if text_x < 0:
+#                         text_x = 0
+#                     if text_x + text_width > img_width:
+#                         text_x = img_width - text_width - 10
+#                     if text_y - text_height < 0:
+#                         text_y = text_height
+#                     if text_y > img_height:
+#                         text_y = img_height
+
+#                     is_still_out_of_bounds = (
+#                         text_x + text_width > img_width or
+#                         text_y > img_height
+#                     )
+
+#                     if is_still_out_of_bounds or is_near_right_edge:
+#                         font_scale = 0.3
+#                         (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+#                         text_x = centroid_x - text_width // 2
+#                         text_y = centroid_y + text_height // 2
+#                         text_x = max(0, min(text_x, img_width - text_width - 10))
+#                         text_y = max(text_height, min(text_y, img_height))
+
+#                 cv2.putText(
+#                     labeled_image,
+#                     text,
+#                     (text_x, text_y),
+#                     cv2.FONT_HERSHEY_SIMPLEX,
+#                     font_scale,
+#                     0,
+#                     thickness
+#                 )
+#         num_cells = valid_count
+#         final_mask = (filtered_mask * 255).astype(np.uint8)
+
+#     return final_mask, num_cells, labeled_image, cell_info, binary_mask, labeled_mask, img
 
 def calculate_cell_wall_thickness(binary_mask, labeled_mask, cell_number, cell_info):
     if cell_number not in cell_info:
